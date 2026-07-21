@@ -47,7 +47,7 @@ export function KPICards({
 
       {/* CARD 5: MTBF */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-        <p className="text-sm font-medium text-slate-500">MTBF (hs)</p>
+        <p className="text-sm font-medium text-slate-500">MTBF (min)</p>
         <p className="text-3xl font-bold text-indigo-400 mt-2">{mtbf}</p>
       </div>
 
