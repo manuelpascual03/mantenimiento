@@ -18,10 +18,23 @@ export default function Historial() {
     const { data: m } = await supabase.from("maquinas").select("id, nombre, numero_maquina");
     setMaquinas(m || []);
 
-    // Traemos todos los registros completados incluyendo la columna sector y categoria para discriminar edilicio
+    // Traemos todos los registros completados incluyendo ot_responsables para la asignación múltiple
     let query = supabase
       .from("ordenes_trabajo")
-      .select("*, maquinas(nombre, numero_maquina), perfiles!tecnico_id(nombre_completo)")
+      .select(`
+        *,
+        maquinas(nombre, numero_maquina),
+        perfiles!tecnico_id(nombre_completo),
+        proveedores!proveedor_id(nombre),
+        ot_responsables(
+          id,
+          tipo,
+          tecnico_id,
+          proveedor_id,
+          perfiles:tecnico_id(nombre_completo),
+          proveedores:proveedor_id(nombre)
+        )
+      `)
       .eq("estado_ot", "completada");
 
     if (filtroMaquina) query = query.eq("maquina_id", filtroMaquina);
@@ -36,6 +49,30 @@ export default function Historial() {
     m.numero_maquina.toLowerCase().includes(busqueda.toLowerCase())
   );
 
+  // Función para obtener y formatear la lista completa de responsables asignados
+  const obtenerTextoResponsables = (reg: any) => {
+    if (reg.es_externo_general) return "EXTERNO GENERAL";
+
+    const resp = reg.ot_responsables || [];
+    const nombres: string[] = [];
+
+    resp.forEach((r: any) => {
+      if (r.tipo === 'interno' && r.perfiles?.nombre_completo) {
+        nombres.push(r.perfiles.nombre_completo);
+      } else if (r.tipo === 'externo' && r.proveedores?.nombre) {
+        nombres.push(`EXT: ${r.proveedores.nombre}`);
+      }
+    });
+
+    // Fallback retrocompatible para OTs guardadas previamente
+    if (nombres.length === 0) {
+      if (reg.proveedores?.nombre) nombres.push(`EXT: ${reg.proveedores.nombre}`);
+      else if (reg.perfiles?.nombre_completo) nombres.push(reg.perfiles.nombre_completo);
+    }
+
+    return nombres.length > 0 ? nombres.join(", ") : "Sin asignar";
+  };
+
   // Función interna para formatear fecha y hora de forma segura
   const formatearFechaHora = (fechaStr: string | null) => {
     if (!fechaStr) return "Sin registrar";
@@ -43,9 +80,23 @@ export default function Historial() {
     return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
   };
 
-  // Función interna para calcular la duración neta de parada
+  // Función interna para calcular la duración neta de parada (Parada OT -> Finalización)
   const calcularTiempoParada = (inicioStr: string, finStr: string | null) => {
     if (!finStr) return "En progreso";
+    const inicio = new Date(inicioStr).getTime();
+    const fin = new Date(finStr).getTime();
+    const diffMs = fin - inicio;
+    if (diffMs <= 0 || isNaN(diffMs)) return "0h 0m";
+    
+    const diffMins = Math.floor(diffMs / 60000);
+    const horas = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return `${horas}h ${mins}m`;
+  };
+
+  // Función interna para calcular la duración real de trabajo (Inicio Trabajo -> Finalización)
+  const calcularTiempoTrabajo = (inicioStr: string | null, finStr: string | null) => {
+    if (!inicioStr || !finStr) return "Sin registrar";
     const inicio = new Date(inicioStr).getTime();
     const fin = new Date(finStr).getTime();
     const diffMs = fin - inicio;
@@ -68,18 +119,19 @@ export default function Historial() {
     return "Equipo no especificado";
   };
 
-  // --- FUNCIÓN EXPORTAR EXCEL (Estructura dinámica corregida para Edilicio) ---
+  // --- FUNCIÓN EXPORTAR EXCEL ---
   const exportarExcel = () => {
     const dataExportar = registros.map(reg => ({
       "FECHA PARADA": formatearFechaHora(reg.fecha_creacion),
-      "FECHA INICIO": formatearFechaHora(reg.fecha_inicio_real),
+      "FECHA INICIO TRABAJO": formatearFechaHora(reg.fecha_inicio_real),
       "FECHA DE FINALIZACION": formatearFechaHora(reg.fecha_completada),
       "TIEMPO PARADA": calcularTiempoParada(reg.fecha_creacion, reg.fecha_completada),
+      "TIEMPO TRABAJO": calcularTiempoTrabajo(reg.fecha_inicio_real, reg.fecha_completada),
       Fecha: new Date(reg.fecha_completada).toLocaleDateString(),
       Equipo: obtenerIdentificadorEquipo(reg),
       Diagnóstico: reg.descripcion,
       Causa_Real: reg.causa_real || "Sin detallar",
-      Técnico: reg.perfiles?.nombre_completo || "Sin asignar"
+      "Responsable(s)": obtenerTextoResponsables(reg)
     }));
 
     const ws = XLSX.utils.json_to_sheet(dataExportar);
@@ -88,9 +140,8 @@ export default function Historial() {
     XLSX.writeFile(wb, `Historial_Mantenimiento_${new Date().toLocaleDateString()}.xlsx`);
   };
 
-  // --- FUNCIÓN EXPORTAR PDF (Actualizada con fechas completas y concordancia horizontal) ---
+  // --- FUNCIÓN EXPORTAR PDF ---
   const exportarPDF = () => {
-    // Definimos orientación 'landscape' (horizontal) para que entren todas las columnas de métricas de tiempo de forma estética
     const doc = new jsPDF({ orientation: "landscape" });
     doc.text("Historial de Reparaciones y Métricas de Tiempo - MiCRO", 14, 15);
     
@@ -99,18 +150,19 @@ export default function Historial() {
       formatearFechaHora(reg.fecha_inicio_real),
       formatearFechaHora(reg.fecha_completada),
       calcularTiempoParada(reg.fecha_creacion, reg.fecha_completada),
+      calcularTiempoTrabajo(reg.fecha_inicio_real, reg.fecha_completada),
       obtenerIdentificadorEquipo(reg),
       `Sup: ${reg.descripcion}\nReal: ${reg.causa_real || "-"}`,
-      reg.perfiles?.nombre_completo || "Sin asignar"
+      obtenerTextoResponsables(reg)
     ]);
 
     autoTable(doc, {
-      head: [['Fecha Parada', 'Fecha Inicio', 'Fecha Fin', 'Tiempo Parada', 'Equipo / Sector', 'Diagnóstico vs Causa', 'Técnico']],
+      head: [['Fecha Parada', 'Inicio Trabajo', 'Fecha Fin', 'Tiempo Parada', 'Tiempo Trabajo', 'Equipo / Sector', 'Diagnóstico vs Causa', 'Responsable(s)']],
       body: tableData,
       startY: 20,
       theme: 'grid',
-      headStyles: { fillColor: [16, 185, 129] }, // Verde Esmeralda corporativo
-      styles: { fontSize: 8 } // Tamaño de letra óptimo para modo horizontal
+      headStyles: { fillColor: [16, 185, 129] },
+      styles: { fontSize: 8 }
     });
 
     doc.save(`Historial_MiCRO_${new Date().toLocaleDateString()}.pdf`);
@@ -177,7 +229,7 @@ export default function Historial() {
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">Fecha</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">Equipo / Ubicación</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">Diagnóstico y Causa Real</th>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">Responsable</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">Responsable(s)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
@@ -211,8 +263,8 @@ export default function Historial() {
                     <p className="text-xs text-slate-900 font-bold">{reg.causa_real || "Sin detallar"}</p>
                   </div>
                 </td>
-                <td className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase">
-                  {reg.perfiles?.nombre_completo || "Sin asignar"}
+                <td className="px-6 py-4 text-[10px] font-black text-slate-600 uppercase">
+                  {obtenerTextoResponsables(reg)}
                 </td>
               </tr>
             ))}

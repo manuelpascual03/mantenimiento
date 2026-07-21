@@ -23,7 +23,9 @@ export default function PreventivosPage() {
   const obtenerMaquinas = async () => {
     try {
       setCargando(true);
-      // Agregamos url_instructivo y sector explícitamente a la consulta select
+      // Disparar la verificación automática al cargar el módulo
+      await supabase.rpc("disparar_ordenes_preventivas_diarias");
+
       const { data, error } = await supabase
         .from("maquinas")
         .select("*, perfiles:tecnico_asignado_id (nombre_completo)")
@@ -57,12 +59,12 @@ export default function PreventivosPage() {
   const nombreMes = fechaVista.toLocaleString('es-AR', { month: 'long' });
   const tituloCalendario = `${nombreMes.charAt(0).toUpperCase() + nombreMes.slice(1)} ${anio}`;
 
-  if (cargando) return <div className="p-12 font-black text-slate-400 uppercase tracking-widest italic">Sincronizando...</div>;
+  if (cargando) return <div className="p-12 font-black text-slate-400  tracking-tight italic">Sincronizando...</div>;
 
   return (
     <main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 md:space-y-8 bg-slate-50 text-left">
       <div>
-        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tighter  leading-none">Planificación de Preventivos</h1>
+        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tighter leading-none">Planificación de Preventivos</h1>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
@@ -99,9 +101,14 @@ export default function PreventivosPage() {
                       <div 
                         key={m.id} 
                         onClick={() => { setMaquinaSeleccionada(m); setMostrarModal(true); }}
-                        className="text-[7px] bg-slate-900 text-white font-black px-1.5 py-1 rounded-md truncate uppercase cursor-pointer hover:bg-emerald-600 transition-colors"
+                        className={`text-[7px] font-black px-1.5 py-1 rounded-md truncate uppercase cursor-pointer transition-colors ${
+                          m.preventivo_confirmado 
+                            ? "bg-slate-900 text-white hover:bg-emerald-600" 
+                            : "bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200"
+                        }`}
+                        title={m.preventivo_confirmado ? "Fecha Confirmada" : "Fecha Tentativa"}
                       >
-                        {m.numero_maquina}
+                        {m.preventivo_confirmado ? "✓ " : "⏳ "}{m.numero_maquina}
                       </div>
                     ))}
                   </div>
@@ -116,7 +123,7 @@ export default function PreventivosPage() {
           <div className="mb-6">
             <h2 className="text-xl font-black text-slate-900 uppercase tracking-tighter leading-none">Próximos 30 días</h2>
             {perfil?.rol !== 'operario' && (
-               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-2 italic">Haz clic para asignar responsable</p>
+               <p className="text-[9px] font-black text-slate-400 uppercase tracking-tight mt-2">Haz clic para confirmar fecha y asignación</p>
             )}
           </div>
           
@@ -127,18 +134,27 @@ export default function PreventivosPage() {
               proximos.map(m => {
                 const fechaPrev = new Date(m.proximo_preventivo);
                 const vencido = fechaPrev < new Date(new Date().setHours(0,0,0,0));
+                const confirmado = m.preventivo_confirmado;
+
                 return (
                   <div 
                     key={m.id} 
                     onClick={() => { setMaquinaSeleccionada(m); setMostrarModal(true); }}
-                    className={`p-4 rounded-[20px] border transition-all cursor-pointer group ${vencido ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100 hover:border-emerald-300'}`}
+                    className={`p-4 rounded-[20px] border transition-all cursor-pointer group ${
+                      vencido ? 'bg-red-50 border-red-100' : 
+                      confirmado ? 'bg-slate-50 border-slate-100 hover:border-emerald-300' :
+                      'bg-amber-50/50 border-amber-100 hover:border-amber-300'
+                    }`}
                   >
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex flex-col">
                         <span className="text-[8px] font-black uppercase text-emerald-600 tracking-tighter">#{m.numero_maquina}</span>
                         <h3 className="font-black text-slate-900 text-[11px] leading-tight uppercase">{m.nombre}</h3>
                       </div>
-                      {vencido && <span className="px-1.5 py-0.5 bg-red-100 text-red-600 text-[7px] font-black rounded-md border border-red-200 uppercase tracking-tighter">Atrasado</span>}
+                      <div className="flex gap-1">
+                        {!confirmado && <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[7px] font-black rounded-md border border-amber-200 uppercase tracking-tighter">Sin Confirmar</span>}
+                        {vencido && <span className="px-1.5 py-0.5 bg-red-100 text-red-600 text-[7px] font-black rounded-md border border-red-200 uppercase tracking-tighter">Atrasado</span>}
+                      </div>
                     </div>
                     <div className="space-y-1.5 border-t border-slate-200/50 pt-2">
                       <div className="flex justify-between items-center text-[9px]">

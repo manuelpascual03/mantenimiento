@@ -5,7 +5,7 @@ import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../context/AuthContext";
 import { NewOrderModal } from "../../components/dashboard/new-order-modal";
 import { EditOrderModal } from "../../components/dashboard/edit-order-modal";
-import { Building, Wrench, MapPin, X, RefreshCw, ChevronRight, User, Truck } from "lucide-react";
+import { Building, Wrench, MapPin, X, RefreshCw, ChevronRight, User, Truck, Check } from "lucide-react";
 
 export default function Ordenes() {
   const [ordenes, setOrdenes] = useState<any[]>([]);
@@ -33,9 +33,9 @@ export default function Ordenes() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const obtenerDatos = async () => {
+  const obtenerDatos = async (silencioso = false) => {
     try {
-      setCargando(true);
+      if (!silencioso) setCargando(true);
       
       // Cargar operarios internos
       const { data: dataTecnicos } = await supabase.from("perfiles").select("id, nombre_completo").eq("rol", "operario");
@@ -50,7 +50,15 @@ export default function Ordenes() {
         maquinas (nombre, numero_maquina, sector),
         perfil_creador:perfiles!creado_por (nombre_completo),
         perfil_tecnico:perfiles!tecnico_id (nombre_completo),
-        proveedores ! proveedor_id (nombre)
+        proveedores ! proveedor_id (nombre),
+        ot_responsables (
+          id,
+          tipo,
+          tecnico_id,
+          proveedor_id,
+          perfiles:tecnico_id (nombre_completo),
+          proveedores:proveedor_id (nombre)
+        )
       `);
 
       if (perfil?.rol === 'operario') {
@@ -68,34 +76,102 @@ export default function Ordenes() {
     } catch (err: any) { 
       console.error("Error:", err.message); 
     } finally { 
-      setCargando(false); 
+      if (!silencioso) setCargando(false); 
     }
   };
 
   const ordenesFiltradas = ordenes.filter(ot => (ot.categoria || 'maquinaria') === activeTab);
 
-  const asignarResponsable = async (otId: string, tipo: "interno" | "externo" | "ninguno", id: string) => {
+  // Asignación Múltiple / Toggling de Responsables con actualización fluida sin salto
+  const toggleResponsable = async (ot: any, tipo: "interno" | "externo" | "externo_general" | "ninguno", targetId: string) => {
     try {
-      let updateData: any = {};
-      
-      if (tipo === "interno") {
-        updateData = { tecnico_id: id === "" ? null : id, proveedor_id: null };
-      } else if (tipo === "externo") {
-        updateData = { proveedor_id: id === "" ? null : id, tecnico_id: null };
-      } else {
-        updateData = { tecnico_id: null, proveedor_id: null };
+      if (tipo === "ninguno") {
+        setOrdenes(prev => prev.map(o => o.id === ot.id ? { ...o, ot_responsables: [], tecnico_id: null, proveedor_id: null, es_externo_general: false } : o));
+        
+        await supabase.from("ot_responsables").delete().eq("orden_id", ot.id);
+        await supabase.from("ordenes_trabajo").update({ tecnico_id: null, proveedor_id: null, es_externo_general: false }).eq("id", ot.id);
+        obtenerDatos(true);
+        return;
       }
 
-      const { error } = await supabase.from("ordenes_trabajo").update(updateData).eq("id", otId);
-      if (error) throw error;
-      
-      // Cerrar menú tras asignación
-      setMenuAbiertoOtId(null);
-      setSubMenuVisible(false);
-      obtenerDatos();
+      if (tipo === "externo_general") {
+        setOrdenes(prev => prev.map(o => o.id === ot.id ? { ...o, ot_responsables: [], tecnico_id: null, proveedor_id: null, es_externo_general: true } : o));
+
+        await supabase.from("ot_responsables").delete().eq("orden_id", ot.id);
+        await supabase.from("ordenes_trabajo").update({ tecnico_id: null, proveedor_id: null, es_externo_general: true }).eq("id", ot.id);
+        obtenerDatos(true);
+        return;
+      }
+
+      const responsablesActuales = ot.ot_responsables || [];
+      const yaExiste = responsablesActuales.some((r: any) => 
+        tipo === 'interno' ? r.tecnico_id === targetId : r.proveedor_id === targetId
+      );
+
+      let nuevosResponsables = [...responsablesActuales];
+      if (yaExiste) {
+        nuevosResponsables = nuevosResponsables.filter((r: any) => 
+          tipo === 'interno' ? r.tecnico_id !== targetId : r.proveedor_id !== targetId
+        );
+      } else {
+        const itemTecnico = tecnicos.find(t => t.id === targetId);
+        const itemProveedor = proveedores.find(p => p.id === targetId);
+        
+        nuevosResponsables.push({
+          orden_id: ot.id,
+          tipo: tipo,
+          tecnico_id: tipo === 'interno' ? targetId : null,
+          proveedor_id: tipo === 'externo' ? targetId : null,
+          perfiles: tipo === 'interno' && itemTecnico ? { nombre_completo: itemTecnico.nombre_completo } : null,
+          proveedores: tipo === 'externo' && itemProveedor ? { nombre: itemProveedor.nombre } : null
+        });
+      }
+
+      setOrdenes(prev => prev.map(o => o.id === ot.id ? { ...o, ot_responsables: nuevosResponsables, es_externo_general: false } : o));
+
+      if (yaExiste) {
+        await supabase.from("ot_responsables").delete().match({
+          orden_id: ot.id,
+          ...(tipo === 'interno' ? { tecnico_id: targetId } : { proveedor_id: targetId })
+        });
+      } else {
+        await supabase.from("ot_responsables").insert({
+          orden_id: ot.id,
+          tipo: tipo,
+          ...(tipo === 'interno' ? { tecnico_id: targetId } : { proveedor_id: targetId })
+        });
+      }
+
+      await supabase.from("ordenes_trabajo").update({ es_externo_general: false }).eq("id", ot.id);
+
+      obtenerDatos(true);
     } catch (err: any) { 
       alert("Error: " + err.message); 
     }
+  };
+
+  const renderBotonTexto = (ot: any) => {
+    if (ot.es_externo_general) return "EXTERNO";
+
+    const resp = ot.ot_responsables || [];
+    const nombres: string[] = [];
+
+    resp.forEach((r: any) => {
+      if (r.tipo === 'interno' && r.perfiles?.nombre_completo) {
+        nombres.push(r.perfiles.nombre_completo);
+      } else if (r.tipo === 'externo' && r.proveedores?.nombre) {
+        nombres.push(`EXT: ${r.proveedores.nombre}`);
+      }
+    });
+
+    if (nombres.length === 0) {
+      if (ot.proveedores?.nombre) nombres.push(`EXT: ${ot.proveedores.nombre}`);
+      else if (ot.perfil_tecnico?.nombre_completo) nombres.push(ot.perfil_tecnico.nombre_completo);
+    }
+
+    if (nombres.length === 0) return "Sin Asignar";
+    if (nombres.length === 1) return nombres[0];
+    return `${nombres[0]} +${nombres.length - 1}`;
   };
 
   const borrarOrden = async (id: string) => {
@@ -123,6 +199,19 @@ export default function Ordenes() {
     return `${horas} HORAS y ${mins} MINUTOS`;
   };
 
+  const calcularTiempoTrabajo = (inicioStr: string | null, finStr: string | null) => {
+    if (!inicioStr) return "Pendiente";
+    const inicio = new Date(inicioStr).getTime();
+    const fin = finStr ? new Date(finStr).getTime() : new Date().getTime();
+    const diffMs = fin - inicio;
+    if (diffMs <= 0 || isNaN(diffMs)) return "0h 0m";
+    
+    const diffMins = Math.floor(diffMs / 60000);
+    const horas = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return `${horas} HORAS y ${mins} MINUTOS`;
+  };
+
   useEffect(() => { obtenerDatos(); }, [perfil]);
 
   return (
@@ -134,7 +223,7 @@ export default function Ordenes() {
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold text-slate-900 tracking-tight leading-none">Gestión de OT</h1>
             <button 
-              onClick={obtenerDatos} 
+              onClick={() => obtenerDatos()} 
               disabled={cargando}
               className={`p-2 rounded-xl border border-slate-200 bg-white shadow-sm transition-all active:scale-90 ${cargando ? 'animate-spin text-emerald-600' : 'text-slate-400 hover:text-emerald-600'}`}
             >
@@ -203,36 +292,34 @@ export default function Ordenes() {
                     </div>
                   </td>
 
-                  {/* MENÚ CASCADA FLOTANTE PERSONALIZADO */}
+                  {/* MENÚ CASCADA FLOTANTE PERSONALIZADO CON SELECCIÓN MÚLTIPLE */}
                   <td className="px-6 py-4 text-center relative">
                     {perfil?.rol === 'admin' && ot.estado_ot === 'pendiente' ? (
                       <div className="inline-block text-left" ref={menuAbiertoOtId === ot.id ? menuRef : null}>
                         <button
-                        onClick={() => {
-                          if (menuAbiertoOtId === ot.id) {
-                            setMenuAbiertoOtId(null);
-                            setSubMenuVisible(false);
-                          } else {
-                            setMenuAbiertoOtId(ot.id);
-                            setSubMenuVisible(false);
-                          }
-                        }}
-                        className="w-full bg-slate-50 border border-slate-200 text-[10px] font-black uppercase rounded-md p-1 outline-none text-slate-700 cursor-pointer flex items-center justify-between gap-1 px-2"
-                      >
-                        <span>
-                          {ot.proveedores?.nombre ? `EXT: ${ot.proveedores.nombre}` : (ot.perfil_tecnico?.nombre_completo || "Sin Asignar")}
-                        </span>
-                        <span className="text-[8px] text-slate-400">▼</span>
-                      </button>
+                          onClick={() => {
+                            if (menuAbiertoOtId === ot.id) {
+                              setMenuAbiertoOtId(null);
+                              setSubMenuVisible(false);
+                            } else {
+                              setMenuAbiertoOtId(ot.id);
+                              setSubMenuVisible(false);
+                            }
+                          }}
+                          className="w-full bg-slate-50 border border-slate-200 text-[10px] font-black uppercase rounded-md p-1 outline-none text-slate-700 cursor-pointer flex items-center justify-between gap-1 px-2"
+                        >
+                          <span>{renderBotonTexto(ot)}</span>
+                          <span className="text-[8px] text-slate-400">▼</span>
+                        </button>
 
                         {/* MENÚ PRINCIPAL DEL DESPLEGABLE */}
                         {menuAbiertoOtId === ot.id && (
                           <div className="absolute left-1/2 -translate-x-1/2 mt-1 w-44 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 py-2 animate-in fade-in slide-in-from-top-1 duration-100">
                             <button
-                              onClick={() => asignarResponsable(ot.id, "ninguno", "")}
+                              onClick={() => toggleResponsable(ot, "ninguno", "")}
                               className="w-full text-left px-4 py-2 text-[10px] font-bold uppercase text-slate-400 hover:bg-slate-50 transition-colors"
                             >
-                              Borrar
+                              Borrar Asignaciones
                             </button>
                             
                             <div className="border-t border-slate-100 my-1" />
@@ -244,20 +331,23 @@ export default function Ordenes() {
                                 <ChevronRight size={12} className="text-slate-400" />
                               </div>
                               
-                              {/* Submenú de Operarios Internos */}
-                              <div className="absolute left-full top-0 ml-0.5 w-48 bg-white border border-slate-200 rounded-2xl shadow-xl hidden group-hover:block py-2 max-h-48 overflow-y-auto">
+                              <div className="absolute left-full top-0 ml-0.5 w-48 bg-white border border-slate-200 rounded-2xl shadow-xl hidden group-hover:block py-2 max-h-48 overflow-y-auto z-[70]">
                                 {tecnicos.length === 0 ? (
                                   <span className="block px-4 py-2 text-[9px] italic text-slate-400 uppercase">No hay operarios</span>
                                 ) : (
-                                  tecnicos.map(t => (
-                                    <button
-                                      key={t.id}
-                                      onClick={() => asignarResponsable(ot.id, "interno", t.id)}
-                                      className="w-full text-left px-4 py-1.5 text-[10px] font-bold uppercase text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
-                                    >
-                                      {t.nombre_completo}
-                                    </button>
-                                  ))
+                                  tecnicos.map(t => {
+                                    const asignado = (ot.ot_responsables || []).some((r: any) => r.tipo === 'interno' && r.tecnico_id === t.id) || ot.tecnico_id === t.id;
+                                    return (
+                                      <button
+                                        key={t.id}
+                                        onClick={() => toggleResponsable(ot, "interno", t.id)}
+                                        className={`w-full text-left px-4 py-1.5 text-[10px] font-bold uppercase transition-colors flex items-center justify-between ${asignado ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                                      >
+                                        <span>{t.nombre_completo}</span>
+                                        {asignado && <Check size={12} className="text-emerald-600" />}
+                                      </button>
+                                    );
+                                  })
                                 )}
                               </div>
                             </div>
@@ -273,30 +363,32 @@ export default function Ordenes() {
                                 <ChevronRight size={12} className={subMenuVisible ? 'text-emerald-500' : 'text-slate-400'} />
                               </div>
                               
-                              {/* SUBMENÚ CASCADA FLOTANTE (CON SCROLLBAR SI HACE FALTA Y AJUSTE SEGURO) */}
                               {subMenuVisible && (
-                                <div className="absolute left-full top-0 ml-0.5 w-52 bg-white border border-slate-200 rounded-2xl shadow-xl py-2 max-h-52 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent animate-in fade-in slide-in-from-left-1 duration-100 z-[60]">
-                                  {/* Opción Comodín Obligatoria arriba */}
+                                <div className="absolute left-full top-0 ml-0.5 w-52 bg-white border border-slate-200 rounded-2xl shadow-xl py-2 max-h-52 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent animate-in fade-in slide-in-from-left-1 duration-100 z-[70]">
                                   <button
-                                    onClick={() => asignarResponsable(ot.id, "externo", "")}
-                                    className="w-full text-left px-4 py-2 text-[10px] font-black text-emerald-600 hover:bg-emerald-50 transition-colors border-b border-slate-100 uppercase tracking-tighter"
+                                    onClick={() => toggleResponsable(ot, "externo_general", "")}
+                                    className={`w-full text-left px-4 py-2 text-[10px] font-black hover:bg-emerald-50 transition-colors border-b border-slate-100 uppercase tracking-tighter flex items-center justify-between ${ot.es_externo_general ? 'bg-amber-50 text-amber-700' : 'text-emerald-600'}`}
                                   >
-                                    Externo
+                                    <span>Externo</span>
+                                    {ot.es_externo_general && <Check size={12} className="text-amber-600" />}
                                   </button>
                                   
-                                  {/* Lista Dinámica de Proveedores */}
                                   {proveedores.length === 0 ? (
                                     <span className="block px-4 py-2 text-[9px] italic text-slate-400 uppercase">Sin proveedores</span>
                                   ) : (
-                                    proveedores.map(p => (
-                                      <button
-                                        key={p.id}
-                                        onClick={() => asignarResponsable(ot.id, "externo", p.id)}
-                                        className="w-full text-left px-4 py-1.5 text-[10px] font-bold uppercase text-slate-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
-                                      >
-                                        {p.nombre}
-                                      </button>
-                                    ))
+                                    proveedores.map(p => {
+                                      const asignado = (ot.ot_responsables || []).some((r: any) => r.tipo === 'externo' && r.proveedor_id === p.id) || ot.proveedor_id === p.id;
+                                      return (
+                                        <button
+                                          key={p.id}
+                                          onClick={() => toggleResponsable(ot, "externo", p.id)}
+                                          className={`w-full text-left px-4 py-1.5 text-[10px] font-bold uppercase transition-colors flex items-center justify-between ${asignado ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                                        >
+                                          <span>{p.nombre}</span>
+                                          {asignado && <Check size={12} className="text-emerald-600" />}
+                                        </button>
+                                      );
+                                    })
                                   )}
                                 </div>
                               )}
@@ -307,14 +399,14 @@ export default function Ordenes() {
                       </div>
                     ) : (
                       <span className="text-[10px] font-black text-slate-400 uppercase">
-                        {ot.proveedores?.nombre ? `EXT: ${ot.proveedores.nombre}` : (ot.perfil_tecnico?.nombre_completo || 'Pendiente')}
+                        {renderBotonTexto(ot)}
                       </span>
                     )}
                   </td>
 
                   <td className="px-6 py-4 text-center">
                     <div className="flex justify-center gap-4 items-center">
-                      {perfil?.rol !== 'operario' && <EditOrderModal orden={ot} onOrderUpdated={obtenerDatos} />}
+                      {perfil?.rol !== 'operario' && <EditOrderModal orden={ot} onOrderUpdated={() => obtenerDatos(true)} />}
                       {perfil?.rol === 'admin' && <button onClick={() => borrarOrden(ot.id)} className="text-slate-300 hover:text-red-600 transition-colors text-[10px] font-black uppercase">Borrar</button>}
                     </div>
                   </td>
@@ -325,7 +417,7 @@ export default function Ordenes() {
         </table>
       </div>
 
-      {/* VISTA MÓVIL (TARJETAS) */}
+      {/* VISTA MÓVIL (TARJETAS ORIGINALES) */}
       <div className="md:hidden space-y-4 pb-10">
         {ordenesFiltradas.length === 0 ? (
           <div className="p-12 text-center text-slate-400 text-xs font-black uppercase italic">Sin tareas pendientes</div>
@@ -352,7 +444,7 @@ export default function Ordenes() {
               </div>
               <div className="pt-3 border-t border-slate-50 flex justify-between items-center">
                 <span className="text-[9px] font-black text-slate-400 uppercase">
-                  Resp: {ot.proveedores?.nombre ? ot.proveedores.nombre.split(' ')[0] : (ot.perfil_tecnico?.nombre_completo?.split(' ')[0] || '---')}
+                  Resp: {renderBotonTexto(ot)}
                 </span>
                 <span className={`text-[8px] font-black px-2 py-1 rounded uppercase tracking-tighter ${ot.prioridad === 'alta' ? 'bg-red-50 text-red-600' : 'bg-slate-50 text-slate-400'}`}>{ot.prioridad || 'normal'}</span>
               </div>
@@ -361,7 +453,7 @@ export default function Ordenes() {
         )}
       </div>
 
-      {/* MODAL DETALLE CON METRICAS DE TIEMPO */}
+      {/* MODAL DETALLE ORIGINAL */}
       {ordenSeleccionada && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
           <div className="bg-white rounded-[32px] w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in duration-200">
@@ -410,14 +502,24 @@ export default function Ordenes() {
                   </div>
                   
                   {ordenSeleccionada.estado_ot === 'completada' && (
-                    <div className="flex items-center justify-between text-[10px] pt-2 border-t border-slate-200/60">
-                      <span className="font-black text-emerald-600 uppercase flex items-center gap-2">
-                        Tiempo Parada:
-                      </span>
-                      <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
-                        {calcularTiempoParada(ordenSeleccionada.fecha_creacion, ordenSeleccionada.fecha_completada)}
-                      </span>
-                    </div>
+                    <>
+                      <div className="flex items-center justify-between text-[10px] pt-2 border-t border-slate-200/60">
+                        <span className="font-black text-emerald-600 uppercase flex items-center gap-2">
+                          Tiempo Parada:
+                        </span>
+                        <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                          {calcularTiempoParada(ordenSeleccionada.fecha_creacion, ordenSeleccionada.fecha_completada)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] pt-1">
+                        <span className="font-black text-emerald-600 uppercase flex items-center gap-2">
+                          Tiempo Trabajo:
+                        </span>
+                        <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
+                          {calcularTiempoTrabajo(ordenSeleccionada.fecha_inicio_real, ordenSeleccionada.fecha_completada)}
+                        </span>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>

@@ -19,12 +19,29 @@ export function EditOrderModal({ orden, onOrderUpdated }: { orden: any, onOrderU
     e.preventDefault();
     setCargando(true);
     try {
+      const updateData: any = { 
+        estado_ot: formData.estado_ot,
+        causa_real: formData.causa_real
+      };
+
+      const ahora = new Date().toISOString();
+
+      // Hito 2: Guardar fecha_inicio_real al pasar a en progreso
+      if ((formData.estado_ot === "en_progreso" || formData.estado_ot === "en_proceso") && !orden.fecha_inicio_real) {
+        updateData.fecha_inicio_real = ahora;
+      }
+
+      // Hito 3: Guardar fecha_completada al finalizar
+      if (formData.estado_ot === "completada" && !orden.fecha_completada) {
+        updateData.fecha_completada = ahora;
+        if (!orden.fecha_inicio_real) {
+          updateData.fecha_inicio_real = ahora;
+        }
+      }
+
       const { error } = await supabase
         .from("ordenes_trabajo")
-        .update({ 
-          estado_ot: formData.estado_ot,
-          causa_real: formData.causa_real // Guardamos la causa real detectada
-        })
+        .update(updateData)
         .eq("id", orden.id);
 
       if (error) throw error;
