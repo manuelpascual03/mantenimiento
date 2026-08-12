@@ -50,13 +50,6 @@ export function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => v
             </Link>
           ))}
         </nav>
-
-        <div className="p-8 border-t border-slate-50">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Sistema Activo</span>
-          </div>
-        </div>
       </aside>
     </>
   );

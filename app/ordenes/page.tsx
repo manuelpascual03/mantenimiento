@@ -16,6 +16,9 @@ export default function Ordenes() {
   const [ordenSeleccionada, setOrdenSeleccionada] = useState<any>(null);
   const { perfil } = useAuth();
 
+  // ESTADO LOCAL DE FILTRADO POR ESTADO DE ORDEN
+  const [filtroEstado, setFiltroEstado] = useState<"todos" | "pendiente" | "en_progreso" | "completada">("todos");
+
   // Estados para controlar el menú desplegable custom en cascada
   const [menuAbiertoOtId, setMenuAbiertoOtId] = useState<string | null>(null);
   const [subMenuVisible, setSubMenuVisible] = useState(false);
@@ -80,7 +83,16 @@ export default function Ordenes() {
     }
   };
 
-  const ordenesFiltradas = ordenes.filter(ot => (ot.categoria || 'maquinaria') === activeTab);
+  // FILTRADO COMBINADO DE CATEGORÍA Y ESTADO
+  const ordenesFiltradas = ordenes.filter(ot => {
+    const cumpleCategoria = (ot.categoria || 'maquinaria') === activeTab;
+    const cumpleEstado =
+      filtroEstado === "todos"
+        ? true
+        : ot.estado_ot === filtroEstado ||
+          (filtroEstado === "en_progreso" && ot.estado_ot === "en_proceso");
+    return cumpleCategoria && cumpleEstado;
+  });
 
   // Asignación Múltiple / Toggling de Responsables con actualización fluida sin salto
   const toggleResponsable = async (ot: any, tipo: "interno" | "externo" | "externo_general" | "ninguno", targetId: string) => {
@@ -239,13 +251,30 @@ export default function Ordenes() {
         )}
       </div>
 
-      <div className="flex gap-4 border-b border-slate-200">
-        <button onClick={() => setActiveTab('maquinaria')} className={`pb-4 px-2 flex-1 md:flex-none flex items-center justify-center gap-2 text-[11px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === 'maquinaria' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-400'}`}>
-          <Wrench size={14} /> Maquinaria
-        </button>
-        <button onClick={() => setActiveTab('edilicio')} className={`pb-4 px-2 flex-1 md:flex-none flex items-center justify-center gap-2 text-[11px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === 'edilicio' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-400'}`}>
-          <Building size={14} /> Infraestructura
-        </button>
+      {/* PESTAÑAS DE CATEGORÍA Y DESPLEGABLE NEUTRO DE FILTRADO */}
+      <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 border-b border-slate-200 pb-4">
+        <div className="flex gap-4">
+          <button onClick={() => setActiveTab('maquinaria')} className={`pb-2 px-2 flex-1 md:flex-none flex items-center justify-center gap-2 text-[11px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === 'maquinaria' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-400'}`}>
+            <Wrench size={14} /> Maquinaria
+          </button>
+          <button onClick={() => setActiveTab('edilicio')} className={`pb-2 px-2 flex-1 md:flex-none flex items-center justify-center gap-2 text-[11px] font-black uppercase tracking-widest transition-all border-b-2 ${activeTab === 'edilicio' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-slate-400'}`}>
+            <Building size={14} /> Infraestructura
+          </button>
+        </div>
+
+        {/* SELECTOR DESPLEGABLE NEUTRO SIN COLORES */}
+        <div className="flex items-center gap-2">
+          <select
+            value={filtroEstado}
+            onChange={(e) => setFiltroEstado(e.target.value as any)}
+            className="bg-white border border-slate-200 text-slate-400 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-xl shadow-sm outline-none focus:border-slate-400 cursor-pointer transition-all w-full md:w-auto"
+          >
+            <option value="todos">Filtrar</option>
+            <option value="pendiente">Pendientes</option>
+            <option value="en_progreso">En Progreso</option>
+            <option value="completada">Completadas</option>
+          </select>
+        </div>
       </div>
 
       {/* TABLA DESKTOP CON SEMÁFORO */}

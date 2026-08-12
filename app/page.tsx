@@ -33,10 +33,9 @@ export default function Home() {
   const [reporteGlobal, setReporteGlobal] = useState<string | null>(null);
   const [generandoReporte, setGenerandoReporte] = useState(false);
 
-  // --- BASE PARA COSTOS FINANCIEROS (REQUERIMIENTO PUNTO 4) ---
+  // BASE PARA COSTOS FINANCIEROS
   const COSTO_POR_HORA_PARADA = 0; 
 
-  // Lógica para disparar el cruce de alertas preventivas y de stock crítico en segundo plano
   const ejecutarAuditoriaAlertas = async () => {
     if (perfil?.rol === 'admin') {
       try {
@@ -67,36 +66,67 @@ export default function Home() {
       const { data: history } = await historyQuery.order("fecha_creacion", { ascending: true });
 
       const eventos: any[] = [];
-      const indStats: {[key: string]: { mttr: number, fallas: number }} = {};
-      maquinas?.forEach(m => { indStats[m.id] = { mttr: 0, fallas: 0 }; });
+      const indStats: {[key: string]: { mttrTotalMinutos: number, fallasCount: number }} = {};
+      maquinas?.forEach(m => { indStats[m.id] = { mttrTotalMinutos: 0, fallasCount: 0 }; });
 
       const anioActual = new Date().getFullYear();
       let minutosTotalesParadaAnual = 0;
 
+      // Límite de sanidad: 7 días en minutos (10080 min)
+      const MAX_MINUTOS_LOGICOS = 10080;
+
       (history || []).forEach((ot) => {
-        if (ot.fecha_creacion && ot.maquina_id && indStats[ot.maquina_id]) {
-          eventos.push({ time: new Date(ot.fecha_creacion).getTime(), tipo: 'falla', id: ot.maquina_id, duracion: 0 });
-          indStats[ot.maquina_id].fallas++;
-        }
-        if (ot.fecha_completada && ot.maquina_id && indStats[ot.maquina_id]) {
-          const duracion = (new Date(ot.fecha_completada).getTime() - new Date(ot.fecha_creacion).getTime()) / 60000;
-          eventos.push({ time: new Date(ot.fecha_completada).getTime(), tipo: 'reparacion', id: ot.maquina_id, duracion });
-          indStats[ot.maquina_id].mttr += duracion;
+        const esDeMaquinaria = ot.categoria !== "edilicio";
+        const estaCompletada = ot.estado_ot === "completada";
+        const provocoParadaReal = ot.estado_maquina_al_crear === "parada";
 
-          // CORRECCIÓN MATEMÁTICA Y FILTRADO ESTRICTO REAL DE PUNTOS DE PARADA
-          const esDeMaquinaria = ot.categoria !== "edilicio";
-          const esAnioActual = new Date(ot.fecha_completada).getFullYear() === anioActual;
-          const estaCompletada = ot.estado_ot === "completada";
-          const provocoParadaReal = ot.estado_maquina_al_crear === "parada";
+        if (!ot.maquina_id || !indStats[ot.maquina_id]) return;
 
-          // Solo acumulamos si cumple rigurosamente todas las condiciones operativas de parada real
-          if (esDeMaquinaria && esAnioActual && estaCompletada && provocoParadaReal && duracion > 0) {
-            minutosTotalesParadaAnual += duracion;
+        // 1. EVENTOS Y KPIs OPERATIVOS (Solo órdenes de maquinaria y con parada real)
+        if (estaCompletada && esDeMaquinaria && provocoParadaReal && ot.fecha_creacion && ot.fecha_completada) {
+          const finMs = new Date(ot.fecha_completada).getTime();
+          const creacionMs = new Date(ot.fecha_creacion).getTime();
+
+          const duracionParadaTotal = (finMs - creacionMs) / 60000;
+
+          const inicioReparacionMs = ot.fecha_inicio_real 
+            ? new Date(ot.fecha_inicio_real).getTime() 
+            : creacionMs;
+          let duracionReparacion = (finMs - inicioReparacionMs) / 60000;
+
+          if (duracionReparacion > MAX_MINUTOS_LOGICOS) {
+            duracionReparacion = MAX_MINUTOS_LOGICOS;
           }
+
+          if (duracionReparacion > 0) {
+            indStats[ot.maquina_id].fallasCount++;
+            indStats[ot.maquina_id].mttrTotalMinutos += duracionReparacion;
+
+            eventos.push({ 
+              time: finMs, 
+              tipo: 'reparacion', 
+              id: ot.maquina_id, 
+              duracion: duracionReparacion 
+            });
+          }
+
+          const esAnioActual = new Date(ot.fecha_completada).getFullYear() === anioActual;
+          if (esAnioActual && duracionParadaTotal > 0) {
+            minutosTotalesParadaAnual += duracionParadaTotal;
+          }
+        }
+
+        // 2. REGISTRO CRONOLÓGICO DE FALLAS PARA GRÁFICOS
+        if (ot.fecha_creacion && esDeMaquinaria && provocoParadaReal) {
+          eventos.push({ 
+            time: new Date(ot.fecha_creacion).getTime(), 
+            tipo: 'falla', 
+            id: ot.maquina_id, 
+            duracion: 0 
+          });
         }
       });
 
-      // Conversión de minutos limpios filtrados a Horas reales con un decimal
       const horasParadaAnualCalculadas = minutosTotalesParadaAnual > 0 
         ? parseFloat((minutosTotalesParadaAnual / 60).toFixed(1))
         : 0;
@@ -123,29 +153,51 @@ export default function Home() {
         });
       });
 
-      const dataProcesada = chartData.slice(-30);
+      // --- INYECCIÓN DEL PUNTO ACTUAL (HOY) ---
+      // Asegura que el gráfico siempre se extienda hasta el momento exacto actual
       const paradasAhora = maquinas?.filter(m => m.estado === 'parada').length || 0;
+      const dispAhora = total > 0 ? ((total - paradasAhora) / total) * 100 : 100;
+      const mttrAhora = reparacionesGlobal > 0 ? Math.round(mttrTotalGlobal / reparacionesGlobal) : 0;
 
-      const ahora = new Date().getTime();
-      let tiempoTotalFlota = 0;
-      
+      chartData.push({
+        fecha: new Date().toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }),
+        disponibilidad: Math.round(dispAhora),
+        mttr: mttrAhora
+      });
+
+      const dataProcesada = chartData.slice(-30);
+
+      // VENTANA DE EVALUACIÓN COHERENTE: Últimos 30 días para Confiabilidad (MTBF)
+      const VENTANA_DIAS = 30;
+      const tiempoEvalMinutos = VENTANA_DIAS * 24 * 60; 
+
       const mtbfMap: {[key: string]: number} = {};
       const mttrMap: {[key: string]: number} = {};
+
       maquinas?.forEach(m => {
-        const creacion = new Date(m.fecha_creacion).getTime();
-        const tiempoTotalM = (ahora - creacion) / 60000;
-        tiempoTotalFlota += tiempoTotalM;
-        
-        const uptimeM = tiempoTotalM - indStats[m.id].mttr;
-        mtbfMap[m.id] = indStats[m.id].fallas > 0 ? Math.round((uptimeM / indStats[m.id].fallas) / 60) : 0;
-        mttrMap[m.id] = indStats[m.id].fallas > 0 ? Math.round(indStats[m.id].mttr / indStats[m.id].fallas) : 0;
+        const fallas = indStats[m.id].fallasCount;
+        const mttrTotalMin = indStats[m.id].mttrTotalMinutos;
+
+        mttrMap[m.id] = fallas > 0 ? Math.round(mttrTotalMin / fallas) : 0;
+
+        if (fallas > 0) {
+          const uptimeMinutos = Math.max(0, tiempoEvalMinutos - mttrTotalMin);
+          const mtbfHoras = (uptimeMinutos / fallas) / 60;
+          mtbfMap[m.id] = Math.round(mtbfHoras);
+        } else {
+          mtbfMap[m.id] = 0;
+        }
       });
 
       setMtbfPorMaquina(mtbfMap);
       setMttrPorMaquina(mttrMap);
 
-      const uptimeTotalGlobal = tiempoTotalFlota - mttrTotalGlobal;
-      const mtbfGlobal = reparacionesGlobal > 0 ? uptimeTotalGlobal / reparacionesGlobal : 0;
+      const totalFallasGlobales = Object.values(indStats).reduce((acc, curr) => acc + curr.fallasCount, 0);
+      const totalMttrMinutosGlobal = Object.values(indStats).reduce((acc, curr) => acc + curr.mttrTotalMinutos, 0);
+
+      const mttrGlobalCalculado = totalFallasGlobales > 0 ? Math.round(totalMttrMinutosGlobal / totalFallasGlobales) : 0;
+      const uptimeGlobalTotalMinutos = Math.max(0, (total * tiempoEvalMinutos) - totalMttrMinutosGlobal);
+      const mtbfGlobalCalculado = totalFallasGlobales > 0 ? Math.round((uptimeGlobalTotalMinutos / totalFallasGlobales) / 60) : 0;
 
       let pendQuery = supabase.from("ordenes_trabajo").select("*", { count: 'exact', head: true }).eq("estado_ot", "pendiente");
       if (filtroSector) {
@@ -157,8 +209,8 @@ export default function Home() {
         pendientes: pendientes || 0,
         totalMaquinas: total,
         disponibilidad: Math.round(total > 0 ? ((total - paradasAhora) / total) * 100 : 100),
-        mttr: dataProcesada.length > 0 ? dataProcesada[dataProcesada.length - 1].mttr : 0,
-        mtbf: Math.round(mtbfGlobal / 60),
+        mttr: mttrGlobalCalculado,
+        mtbf: mtbfGlobalCalculado,
         horasParadaAnual: horasParadaAnualCalculadas,
         costoParadaAnual: costoParadaAnualCalculado
       });
@@ -223,13 +275,11 @@ export default function Home() {
     }
   };
 
-  // Efecto principal para cargas de datos iniciales y sincronización Realtime
   useEffect(() => { 
     obtenerStats(); 
     obtenerMisTareas(); 
     ejecutarAuditoriaAlertas();
 
-    // Suscripción Realtime a la tabla de notificaciones para captar cualquier alerta al instante
     const channel = supabase
       .channel("schema-notificaciones-live")
       .on(
@@ -237,7 +287,6 @@ export default function Home() {
         { event: "INSERT", schema: "public", table: "notificaciones" },
         () => {
           obtenerStats();
-          // Forzamos al hook de notificaciones a enterarse de que hay un nuevo cambio
           window.dispatchEvent(new Event("visibilitychange"));
         }
       )
